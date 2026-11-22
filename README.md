@@ -48,7 +48,13 @@ pipeline and this section were follow-up requests in the same conversation.
 
 ## Install
 
-Download the binary for your platform from the
+With [Homebrew](https://brew.sh), on a Mac or on Linux:
+
+```bash
+brew install ryanjjohnson/tap/rndr
+```
+
+Otherwise, download the binary for your platform from the
 [latest release](https://github.com/ryanjjohnson/rndr/releases/latest), put it somewhere on
 your PATH and name it `rndr` (on Mac and Linux, also `chmod +x rndr`):
 
@@ -71,7 +77,8 @@ gh attestation verify rndr-linux-amd64 --repo ryanjjohnson/rndr
 `SHA256SUMS.txt` in each release covers accidental corruption if you would rather not install
 anything.
 
-On a Mac, a downloaded binary is quarantined; clear that with
+On a Mac, a binary downloaded in a browser is quarantined and macOS will refuse to run it.
+Installing with Homebrew avoids that; otherwise clear it with
 `xattr -d com.apple.quarantine rndr`, or build from source.
 
 ## Build

@@ -382,21 +382,24 @@ func FuzzSTL(f *testing.F) {
 	fuzzLimits(f)
 	seed, _ := os.ReadFile("testdata/bracket.stl")
 	f.Add(seed)
+	fuzzSeeds(func(d []byte) { f.Add(d) }, ".stl")
 	f.Add(binarySTL([][9]float32{{0, 0, 0, 1, 0, 0, 0, 1, 0}, {0, 0, 0, 1, 0, 0, 0, 0, 1}}))
-	f.Fuzz(func(t *testing.T, d []byte) { pipeline(t, "x.stl", d) })
+	f.Fuzz(func(t *testing.T, d []byte) { promptly(t, "pipeline", func() { pipeline(t, "x.stl", d) }) })
 }
 
 func FuzzOBJ(f *testing.F) {
 	fuzzLimits(f)
 	f.Add([]byte("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1 1.0\nf 1 2 3\nf 1/1/1 2//2 -1\nf -4 -3 -2 -1\n"))
-	f.Fuzz(func(t *testing.T, d []byte) { pipeline(t, "x.obj", d) })
+	fuzzSeeds(func(d []byte) { f.Add(d) }, ".obj")
+	f.Fuzz(func(t *testing.T, d []byte) { promptly(t, "pipeline", func() { pipeline(t, "x.obj", d) }) })
 }
 
 func FuzzModelXML(f *testing.F) {
 	fuzzLimits(f)
 	f.Add([]byte(seedModel))
 	f.Add([]byte(`<?xml version="1.0"?><!-- c --><model><![CDATA[x]]><resources><object id='1'/></resources></model>`))
-	f.Fuzz(func(t *testing.T, d []byte) { pipeline(t, "x.3mf", wrap3MF(d)) })
+	fuzzSeeds(func(d []byte) { f.Add(d) }, ".model")
+	f.Fuzz(func(t *testing.T, d []byte) { promptly(t, "pipeline", func() { pipeline(t, "x.3mf", wrap3MF(d)) }) })
 }
 
 func Fuzz3MFZip(f *testing.F) {
@@ -405,7 +408,8 @@ func Fuzz3MFZip(f *testing.F) {
 	f.Add(wrap3MF([]byte(`<model><resources><object id="1"><components><component p:path="/3D/o.model" objectid="1"/></components></object></resources><build><item objectid="1"/></build></model>`),
 		"3D/o.model", `<model><resources><object id="1">`+oneTriangle+`</object></resources></model>`,
 		"_rels/.rels", `<Relationships><Relationship Target="/3D/3dmodel.model" Type="http://x/3dmodel"/></Relationships>`))
-	f.Fuzz(func(t *testing.T, d []byte) { pipeline(t, "x.3mf", d) })
+	fuzzSeeds(func(d []byte) { f.Add(d) }, ".3mf")
+	f.Fuzz(func(t *testing.T, d []byte) { promptly(t, "pipeline", func() { pipeline(t, "x.3mf", d) }) })
 }
 
 func FuzzSniff(f *testing.F) {
@@ -414,7 +418,7 @@ func FuzzSniff(f *testing.F) {
 	f.Add(seed)
 	f.Add(wrap3MF([]byte(seedModel)))
 	f.Add([]byte("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"))
-	f.Fuzz(func(t *testing.T, d []byte) { pipeline(t, "stdin", d) })
+	f.Fuzz(func(t *testing.T, d []byte) { promptly(t, "pipeline", func() { pipeline(t, "", d) }) })
 }
 
 func bufioReader(s string) *bufio.Reader { return bufio.NewReaderSize(strings.NewReader(s), 16) }

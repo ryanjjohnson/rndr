@@ -34,11 +34,22 @@ jobs:
         run: go test -race ./...
       - name: Same tests on a 32-bit build
         run: GOARCH=386 go test ./...
-      - name: Fuzz every input format
+      # 30 seconds a target on every push; 5 minutes a target on the weekly run
+      - name: Fuzz every input route (files, stdin, arguments, keys, view numbers)
+        env:
+          FUZZTIME: ${{ github.event_name == 'schedule' && '5m' || '30s' }}
         run: |
-          for target in FuzzSTL FuzzOBJ FuzzModelXML Fuzz3MFZip FuzzSniff; do
-            go test -run '^$' -fuzz "^$target\$" -fuzztime 45s .
+          for target in FuzzSTL FuzzSTLBinary FuzzOBJ FuzzModelXML Fuzz3MFZip FuzzSniff FuzzStdin FuzzArgs FuzzKeys FuzzView; do
+            echo "::group::$target ($FUZZTIME)"
+            go test -run '^$' -fuzz "^$target\$" -fuzztime "$FUZZTIME" .
+            echo "::endgroup::"
           done
+      - name: Keep any failing input
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-failures
+          path: testdata/fuzz/
 
   codeql:
     name: Static analysis (CodeQL)

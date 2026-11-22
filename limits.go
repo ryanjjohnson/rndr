@@ -21,9 +21,9 @@ var (
 	maxRenderWork = int64(2e9)
 )
 
-// maxInputBytes caps how much of a file (or stdin) is read. The whole file is
-// held in memory while it is parsed. 300 bytes per triangle is more than even
-// the wordiest format (ASCII STL) needs.
+// maxInputBytes caps how much of a file (or stdin) is read. 300 bytes per
+// triangle is more than even the wordiest format (ASCII STL) needs. Text formats
+// are parsed as they stream past, so this bounds time rather than memory.
 func maxInputBytes() int64 {
 	return min(math.MaxInt32, max(64<<20, int64(maxTriangles)*300))
 }
@@ -31,6 +31,10 @@ func maxInputBytes() int64 {
 // hardMaxTriangles is the most --max-triangles accepts: beyond it the index
 // arithmetic would no longer fit the platform's int.
 const hardMaxTriangles = 100_000_000*(strconv.IntSize/64) + 10_000_000*(1-strconv.IntSize/64) // 100M on 64-bit, 10M on 32-bit
+
+// max3MFBytes caps the size of a 3MF file itself, which (being a zip) has to be
+// held in memory whole. A zip is never larger than what it unpacks to.
+func max3MFBytes() int64 { return maxXMLBytes() }
 
 // maxXMLBytes caps the decompressed XML read from one 3MF (the zip-bomb guard).
 func maxXMLBytes() int64 { return max(64<<20, int64(maxTriangles)*100) }

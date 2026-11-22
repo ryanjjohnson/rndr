@@ -28,8 +28,12 @@ func sizeOf(fd uintptr) (cols, rows int, ok bool) {
 	return int(ws.Col), int(ws.Row), ws.Col > 0 && ws.Row > 0
 }
 
-func stdoutIsTerminal() bool {
-	_, err := getTermios(os.Stdout.Fd())
+// keysFromTTY: keys are read from the controlling terminal, not stdin, so the
+// model can arrive on stdin and the viewer still be interactive.
+const keysFromTTY = true
+
+func isTerminal(f *os.File) bool {
+	_, err := getTermios(f.Fd())
 	return err == nil
 }
 

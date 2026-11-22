@@ -100,8 +100,12 @@ rndr part.3mf 94 0 0 1.0          print one frame: RX RY RZ [ZOOM [PANX PANY]]
 rndr part.obj -p                  print the default view
 rndr part.stl 25 -30 0 -s 100x40 -m wire -o part.txt
 rndr part.stl -p -s 100           100 columns wide, as many rows as the model needs
-cat part.stl | rndr - -p
+cat part.stl | rndr                interactive, model from stdin
+curl -s https://example.com/part.3mf | rndr 25 -30 0 -s 100
 ```
+
+With no file name (or `-`), the model is read from stdin and its type is worked out from the
+data itself, so `unzip -p bundle.zip part.stl | rndr` works with no hint about what it is.
 
 `rndr --help` lists every option. Rotation is tilt (X), spin (Y), roll (Z) in degrees;
 `0 0 0` is the front view with model Z up. Zoom 1.0 fits the whole model.
@@ -151,10 +155,11 @@ Model files come from anywhere, so rndr treats every input as hostile.
 
 | Limit | Default | Stops |
 |---|---|---|
-| Triangles | 5,000,000 (`--max-triangles`) | huge or lying files; together with the next row, keeps peak memory under about 2 GB |
-| Input size | 300 bytes per allowed triangle (1.4 GB) | endless input, devices and pipes passed as files |
+| Triangles | 5,000,000 (`--max-triangles`) | huge or lying files; this is what bounds memory, at about 1.2 GB for the mesh |
+| Input read | 300 bytes per allowed triangle (1.4 GB) | endless input keeping it busy; text formats are parsed as they stream, never held in memory |
+| 3MF file size | 100 bytes per allowed triangle (500 MB) | a 3MF is a zip and has to be held whole |
 | Unpacked 3MF XML | 100 bytes per allowed triangle (500 MB) | zip bombs |
-| One XML tag | 64 KB | single enormous allocations |
+| One XML tag / one text line | 64 KB / 1 MB | single enormous allocations |
 | Objects placed by a 3MF | 1,000,000 | assemblies that reference each other exponentially |
 | Drawing work per frame | 2 billion samples | files where every triangle covers the whole frame |
 | Frame size | 2000 x 1000 | absurd `-s` values or terminal sizes |
@@ -163,10 +168,21 @@ Model files come from anywhere, so rndr treats every input as hostile.
   quadratic. On a machine with little memory, lower `--max-triangles`: 1,000,000 keeps rndr under
   about 400 MB.
 
-**How this is checked.** `security_test.go` holds one test per attack (component bomb, zip bomb,
-oversized tag, DTD/entities, path escape, lying STL headers, hash flooding, overdraw, extreme and
-non-finite numbers, escape sequences) and fuzz targets for every format. CI runs them on every
-push, on 64-bit and 32-bit, with the race detector, plus a fuzzing pass, `govulncheck` and CodeQL.
+- **Abuse stdin.** A stream is judged from its first 64 KB: something that is not a model is
+  refused there, and a binary STL is read to exactly the length its header declares.
+- **Abuse the command line.** Every number, size and option is range-checked; a file name is
+  only ever used to open that file, and the name the `p` key saves under is stripped of path
+  separators, control characters and leading dots or dashes.
+
+**How this is checked.** `security_test.go` holds one test per file-based attack (component bomb,
+zip bomb, oversized tag, DTD/entities, path escape, lying STL headers, hash flooding, overdraw,
+extreme and non-finite numbers, escape sequences). `cli_test.go` runs the real program against a
+fake terminal and disk to test arguments, stdin detection and the interactive keys. Ten fuzz
+targets cover every way data gets in: each file format, raw zip bytes, stdin in arbitrary
+pieces, argument lists, keystrokes on arbitrary terminal sizes, and view numbers. Every fuzz run
+also fails on output outside the allowed characters, on a terminal left un-restored, and on any
+input that is merely slow. CI runs all of it on every push, on 64-bit and 32-bit, with the race
+detector, plus `govulncheck` and CodeQL, and a longer fuzzing pass weekly.
 
 **What is not covered.** A crash from running out of memory is still possible on a machine with
 less RAM than the limits allow; it ends the program and nothing else. `-o` and the `p` key write
@@ -179,11 +195,13 @@ sensitive.
 
 ## Layout
 
-- `main.go`: command line and the interactive loop
+- `main.go`: entry point and the real terminal/disk bindings
+- `cli.go`: argument parsing and print mode
+- `interactive.go`: the interactive loop, status bar and save
 - `formats.go`: STL and OBJ readers
 - `threemf.go`: 3MF reader and its XML tag scanner
 - `limits.go`: the hard limits on what a file may cost
-- `security_test.go`: hostile-input tests and fuzz targets
+- `security_test.go`, `cli_test.go`: hostile-input tests and fuzz targets
 - `mesh.go`: vertex welding, normals, edge detection
 - `render.go`: projection, rasteriser, edge drawing, shading
 - `term_*.go`: raw keyboard input and terminal size per operating system

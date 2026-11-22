@@ -43,8 +43,11 @@ func setMode(h uintptr, mode uint32) bool {
 	return r != 0
 }
 
-func stdoutIsTerminal() bool {
-	_, ok := getMode(os.Stdout.Fd())
+// keysFromTTY: on Windows the keyboard is stdin itself.
+const keysFromTTY = false
+
+func isTerminal(f *os.File) bool {
+	_, ok := getMode(f.Fd())
 	return ok
 }
 

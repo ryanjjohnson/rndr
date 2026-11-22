@@ -2,13 +2,18 @@
 
 package main
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
 // Platforms without terminal support here: print mode only.
 
 type rawTerm struct{}
 
-func stdoutIsTerminal() bool                   { return false }
+const keysFromTTY = false
+
+func isTerminal(f *os.File) bool               { return false }
 func terminalSize() (cols, rows int, ok bool)  { return 0, 0, false }
 func openRaw() (*rawTerm, error)               { return nil, errors.New("not supported on this platform") }
 func (t *rawTerm) Read(b []byte) (int, error)  { return 0, errors.New("unsupported") }

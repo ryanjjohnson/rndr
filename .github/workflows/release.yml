@@ -27,6 +27,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -86,3 +88,35 @@ jobs:
           else
             gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --generate-notes
           fi
+
+  # Points the Homebrew tap at the new release. This job, and only this job, is
+  # given a deploy key that can write to ryanjjohnson/homebrew-tap and nothing else.
+  # The tap's own update.sh does the work, and refuses any binary whose build
+  # provenance does not verify.
+  tap:
+    needs: release
+    if: github.repository == 'ryanjjohnson/rndr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ryanjjohnson/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+
+      - name: Update the formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          ./update.sh "$TAG"
+          if git diff --quiet; then
+            echo "The tap is already at $TAG"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "rndr ${TAG#v}"
+          git push

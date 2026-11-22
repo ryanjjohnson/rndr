@@ -14,9 +14,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // limits lowers the global limits for one test and restores them afterwards.
@@ -42,8 +44,140 @@ func within(t *testing.T, d time.Duration, f func()) {
 
 const allowedOutput = " \n.,:;=+*#%@-|/\\"
 
-// pipeline loads, builds and draws a file in every mode, checking that whatever
-// comes out is made only of the characters rndr is supposed to print.
+// colourCode reads one colour-changing escape sequence from the start of s and
+// returns its length, or 0 if s does not start with one that rndr could have
+// written: a grey from the 256-colour palette, an r=g=b truecolor grey, or
+// "back to the default", each in exactly the spelling rndr uses.
+func colourCode(s string) (n int, fg, set bool) {
+	for _, p := range []struct {
+		lead    string
+		fg, set bool
+	}{{"\x1b[38;", true, true}, {"\x1b[48;", false, true}} {
+		rest, ok := strings.CutPrefix(s, p.lead)
+		if !ok {
+			continue
+		}
+		end := strings.IndexByte(rest, 'm')
+		if end < 0 || end > 13 {
+			return 0, false, false
+		}
+		f := strings.Split(rest[:end], ";")
+		num := func(a string) int { // canonical decimal 0..255, or -1
+			v, err := strconv.Atoi(a)
+			if err != nil || v < 0 || v > 255 || strconv.Itoa(v) != a {
+				return -1
+			}
+			return v
+		}
+		switch {
+		case len(f) == 2 && f[0] == "5":
+			if v := num(f[1]); v == 16 || v >= 231 {
+				return len(p.lead) + end + 1, p.fg, true
+			}
+		case len(f) == 4 && f[0] == "2":
+			if v := num(f[1]); v >= 0 && f[2] == f[1] && f[3] == f[1] {
+				return len(p.lead) + end + 1, p.fg, true
+			}
+		}
+		return 0, false, false
+	}
+	if strings.HasPrefix(s, "\x1b[39m") {
+		return 5, true, false
+	}
+	if strings.HasPrefix(s, "\x1b[49m") {
+		return 5, false, false
+	}
+	return 0, false, false
+}
+
+// frameProblem checks a printed frame against everything its style is allowed
+// to contain, and returns the offset of the first byte that is not, or -1.
+//
+//	ascii:   the shading and line characters
+//	braille: spaces and braille patterns (never the blank one)
+//	blocks:  spaces, half and full blocks and grey colour codes, and every
+//	         line must end with the colours back at the terminal's own
+func frameProblem(text string, style int) int {
+	switch style {
+	case styleASCII:
+		return onlyFrom(text, allowedOutput)
+	case styleBraille:
+		for i, c := range text {
+			if c != ' ' && c != '\n' && !(c > 0x2800 && c <= 0x28ff) {
+				return i
+			}
+		}
+		return -1
+	}
+	fgSet, bgSet := false, false
+	for i := 0; i < len(text); {
+		c, size := utf8.DecodeRuneInString(text[i:])
+		switch {
+		case c == '\n':
+			if fgSet || bgSet {
+				return i // colours left on would leak into whatever is printed next
+			}
+		case c == ' ' || c == '▀' || c == '▄' || c == '█':
+		case strings.HasPrefix(text[i:], "\x1b[0m"):
+			fgSet, bgSet, size = false, false, 4
+		case c == 0x1b:
+			n, fg, set := colourCode(text[i:])
+			if n == 0 {
+				return i
+			}
+			if fg {
+				fgSet = set
+			} else {
+				bgSet = set
+			}
+			size = n
+		default:
+			return i
+		}
+		i += size
+	}
+	if fgSet || bgSet {
+		return len(text)
+	}
+	return -1
+}
+
+// anyStyleProblem is frameProblem for a frame whose style is not known.
+func anyStyleProblem(text string) int {
+	worst := -1
+	for style := range styles {
+		i := frameProblem(text, style)
+		if i < 0 {
+			return -1
+		}
+		worst = max(worst, i)
+	}
+	return worst
+}
+
+// cellsWide is how many character cells the widest line of a frame takes.
+func cellsWide(text string) int {
+	widest := 0
+	for _, line := range strings.Split(text, "\n") {
+		n := 0
+		for i := 0; i < len(line); {
+			if k, _, _ := colourCode(line[i:]); k > 0 {
+				i += k
+			} else if strings.HasPrefix(line[i:], "\x1b[0m") {
+				i += 4
+			} else {
+				_, size := utf8.DecodeRuneInString(line[i:])
+				i += size
+				n++
+			}
+		}
+		widest = max(widest, n)
+	}
+	return widest
+}
+
+// pipeline loads, builds and draws a file in every mode and style, checking that
+// whatever comes out is made only of what that style is supposed to print.
 func pipeline(t testing.TB, name string, data []byte) error {
 	soup, err := loadTriangles(name, data)
 	if err != nil {
@@ -55,16 +189,22 @@ func pipeline(t testing.TB, name string, data []byte) error {
 	}
 	r := &Renderer{m: m, aspect: 2}
 	for mode := range modes {
-		for _, v := range []View{
-			{rotX: 25, rotY: -30, zoom: 1, mode: mode},
-			{rotX: -100, rotY: 170, rotZ: 45, zoom: 40, panX: 3, panY: -2, mode: mode},
-		} {
-			text, err := r.FrameText(&v, 40, 12)
-			if err != nil {
-				return err
-			}
-			if i := strings.IndexFunc(text, func(c rune) bool { return !strings.ContainsRune(allowedOutput, c) }); i >= 0 {
-				t.Fatalf("output contains unexpected byte %q", text[i])
+		for style := range styles {
+			for _, v := range []View{
+				{rotX: 25, rotY: -30, zoom: 1, mode: mode, style: style},
+				{rotX: -100, rotY: 170, rotZ: 45, zoom: 40, panX: 3, panY: -2, mode: mode, style: style},
+			} {
+				r.truecolor = mode%2 == 1
+				text, err := r.FrameText(&v, 40, 12)
+				if err != nil {
+					return err
+				}
+				if i := frameProblem(text, style); i >= 0 {
+					t.Fatalf("%s %s output is wrong at byte %d: %q", modes[mode], styles[style], i, text[max(0, i-8):min(len(text), i+8)])
+				}
+				if w := cellsWide(text); w > 40 || strings.Count(text, "\n") != 12 {
+					t.Fatalf("%s %s frame is %d cells wide, %d lines", modes[mode], styles[style], w, strings.Count(text, "\n"))
+				}
 			}
 		}
 	}

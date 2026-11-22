@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"strings"
 )
 
 // Each character cell is sampled subX x subY times; with the usual 1:2 cell
@@ -22,18 +23,31 @@ const (
 
 const ramp = ".,:;=+*#%@"
 
+// What a frame is drawn with. ascii works everywhere. braille gives every
+// character cell 2x4 dots and is still plain text. blocks gives every cell two
+// grey pixels, using colour codes, so it is for screens rather than text files.
+var styles = []string{"ascii", "braille", "blocks"}
+
+const (
+	styleASCII = iota
+	styleBraille
+	styleBlocks
+)
+
 // View is everything that decides what a frame looks like.
 type View struct {
 	rotX, rotY, rotZ float64 // degrees: tilt, spin, roll
 	zoom, panX, panY float64
 	mode             int
+	style            int
 }
 
 // Renderer holds the mesh plus buffers reused between frames.
 type Renderer struct {
-	m      *Mesh
-	aspect float64 // character cell height / width
-	invert bool
+	m         *Mesh
+	aspect    float64 // character cell height / width
+	invert    bool
+	truecolor bool // blocks: 256 grey levels instead of the 26 every terminal has
 
 	X, Y, Z          []float32 // projected vertices, in sample units
 	faceNz, faceLum  []float32
@@ -42,6 +56,8 @@ type Renderer struct {
 	edgeZ            []float32
 	edgeCh           []byte
 	edgeHits         []int32 // samples an edge left in each cell
+	mask             []uint8 // per sample: an edge is visible here (braille and blocks only)
+	useMask          bool
 	bufW, bufH, cols int
 	work             int64 // samples visited this frame, against maxRenderWork
 }
@@ -84,8 +100,17 @@ func euler(rx, ry, rz float64) [9]float64 {
 	return mul3(ax, mul3(ay, az))
 }
 
-// Render draws the view into a cols x rows grid of characters (row-major).
+// Render draws the view into a cols x rows grid of ASCII characters (row-major).
 func (r *Renderer) Render(v *View, cols, rows int) ([]byte, error) {
+	if err := r.raster(v, cols, rows, false); err != nil {
+		return nil, err
+	}
+	return r.asciiGrid(v, cols, rows), nil
+}
+
+// raster projects the model and fills the sample buffers: which face is in
+// front at each sample, and where the visible edges run.
+func (r *Renderer) raster(v *View, cols, rows int, perSampleEdges bool) error {
 	m := r.m
 	W, H := cols*subX, rows*subY
 	ratio := r.aspect * subX / subY // sample height / sample width
@@ -144,11 +169,17 @@ func (r *Renderer) Render(v *View, cols, rows int) ([]byte, error) {
 		r.edgeHits[i] = 0
 	}
 	r.bufW, r.bufH, r.cols = W, H, cols
+	if r.useMask = perSampleEdges; perSampleEdges {
+		if len(r.mask) < W*H {
+			r.mask = make([]uint8, W*H)
+		}
+		clear(r.mask[:W*H])
+	}
 
 	r.work = 0
 	if v.mode != modeXray {
 		if err := r.rasterFaces(); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
@@ -169,11 +200,16 @@ func (r *Renderer) Render(v *View, cols, rows int) ([]byte, error) {
 			}
 			r.drawEdge(e, depth, ratio, slash)
 			if r.work > maxRenderWork {
-				return nil, errTooExpensive
+				return errTooExpensive
 			}
 		}
 	}
+	return nil
+}
 
+// asciiGrid turns the sample buffers into one ASCII character per cell.
+func (r *Renderer) asciiGrid(v *View, cols, rows int) []byte {
+	W := r.bufW
 	out := make([]byte, cols*rows)
 	shade := v.mode == modeBoth || v.mode == modeShade
 	levels := len(ramp)
@@ -208,7 +244,7 @@ func (r *Renderer) Render(v *View, cols, rows int) ([]byte, error) {
 			out[cell] = ch
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (r *Renderer) rasterFaces() error {
@@ -318,6 +354,9 @@ func (r *Renderer) drawEdge(e int, depth bool, ratio, slash float64) {
 		if depth && !r.visible(px, py, z) {
 			continue
 		}
+		if r.useMask {
+			r.mask[py*r.bufW+px] = 1
+		}
 		cell := (py/subY)*r.cols + px/subX
 		r.edgeHits[cell]++
 		if z > r.edgeZ[cell] {
@@ -345,16 +384,40 @@ func (r *Renderer) visible(px, py int, z float32) bool {
 	return false
 }
 
-// FrameText is the frame as plain text: one line per row, trailing blanks removed.
+// Lines draws the view as rows of terminal text in the view's style: no line
+// endings, trailing blanks removed, never wider than cols cells.
+func (r *Renderer) Lines(v *View, cols, rows int) ([][]byte, error) {
+	if err := r.raster(v, cols, rows, v.style != styleASCII); err != nil {
+		return nil, err
+	}
+	switch v.style {
+	case styleBraille:
+		return r.brailleLines(v, cols, rows), nil
+	case styleBlocks:
+		return r.blockLines(v, cols, rows), nil
+	}
+	g := r.asciiGrid(v, cols, rows)
+	lines := make([][]byte, rows)
+	for row := range lines {
+		lines[row] = bytes.TrimRight(g[row*cols:(row+1)*cols], " ")
+	}
+	return lines, nil
+}
+
+// FrameText is the frame as text: one line per row, trailing blanks removed.
 func (r *Renderer) FrameText(v *View, cols, rows int) (string, error) {
-	g, err := r.Render(v, cols, rows)
+	lines, err := r.Lines(v, cols, rows)
 	if err != nil {
 		return "", err
 	}
-	var sb bytes.Buffer
-	sb.Grow(cols*rows + rows)
-	for row := 0; row < rows; row++ {
-		sb.Write(bytes.TrimRight(g[row*cols:(row+1)*cols], " "))
+	size := len(lines)
+	for _, line := range lines {
+		size += len(line)
+	}
+	var sb strings.Builder
+	sb.Grow(size)
+	for _, line := range lines {
+		sb.Write(line)
 		sb.WriteByte('\n')
 	}
 	return sb.String(), nil

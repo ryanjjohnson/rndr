@@ -37,6 +37,9 @@ func isTerminal(f *os.File) bool {
 	return err == nil
 }
 
+// colourOut: terminals here understand colour codes without being asked.
+func colourOut() func() { return func() {} }
+
 // terminalSize reports the size of stdout's terminal, or of the controlling
 // terminal when stdout is a pipe (so `rndr x.stl -p | less` still sizes sensibly).
 func terminalSize() (cols, rows int, ok bool) {

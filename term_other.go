@@ -14,6 +14,7 @@ type rawTerm struct{}
 const keysFromTTY = false
 
 func isTerminal(f *os.File) bool               { return false }
+func colourOut() func()                        { return func() {} }
 func terminalSize() (cols, rows int, ok bool)  { return 0, 0, false }
 func openRaw() (*rawTerm, error)               { return nil, errors.New("not supported on this platform") }
 func (t *rawTerm) Read(b []byte) (int, error)  { return 0, errors.New("unsupported") }

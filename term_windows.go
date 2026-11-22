@@ -62,6 +62,17 @@ func terminalSize() (cols, rows int, ok bool) {
 	return cols, rows, cols > 0 && rows > 0
 }
 
+// colourOut lets a console that is not Windows Terminal understand colour
+// codes in print mode; the returned function puts it back as it was.
+func colourOut() func() {
+	h := os.Stdout.Fd()
+	mode, ok := getMode(h)
+	if !ok || mode&enableVirtualTermOut != 0 || !setMode(h, mode|enableVirtualTermOut) {
+		return func() {}
+	}
+	return func() { setMode(h, mode) }
+}
+
 // rawTerm is the console with line input and echo off and escape sequences on.
 type rawTerm struct{ inMode, outMode uint32 }
 

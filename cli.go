@@ -38,10 +38,14 @@ options:
              COLS      just a width: as many rows as the model needs, no blank rows
   -m, --mode MODE      both (shaded + edges, default), wire (edges, hidden lines removed),
                        mesh (every triangle), xray (see-through mesh), shade
+  -c, --chars STYLE    what to draw with: ascii (default, works everywhere),
+                       braille (2x4 dots per character: 8x the detail, still plain text),
+                       blocks (2 grey pixels per character; needs a colour terminal)
   -o, --out FILE       write the frame to FILE instead of stdout
       --crease DEG     angle at which an edge counts as a feature edge (default 30)
       --aspect N       height/width of a character cell (default 2.0)
-      --invert         reverse the shading ramp (for dark-on-light output)
+      --invert         reverse the shading, for dark-on-light output (ascii and braille;
+                       blocks looks the same on any background)
       --max-triangles N  refuse models with more triangles than this (default 5000000);
                        this is what bounds memory: about 300 bytes per triangle
   -V, --version        print the version
@@ -50,7 +54,8 @@ options:
 interactive keys:
   w s       tilt            a d   spin           z x   roll   (arrows work too)
   W A S D   pan             i o   zoom in / out
-  m         cycle mode      r     reset view
+  m         cycle mode      c     cycle ascii / braille / blocks
+  r         reset view
   p         save the frame to FILE.rndr.txt in the current directory
   ?         key help        q     quit
 `
@@ -157,6 +162,20 @@ func parseArgs(argv []string, exists func(string) bool, stdinPiped bool) (*optio
 				}
 				if o.view.mode < 0 {
 					err = fmt.Errorf("unknown mode '%s' (both, wire, mesh, xray, shade)", m)
+				}
+			}
+		case "-c", "--chars":
+			i++
+			var c string
+			if c, err = need(i, a); err == nil {
+				o.view.style = -1
+				for k, name := range styles {
+					if name == c {
+						o.view.style = k
+					}
+				}
+				if o.view.style < 0 {
+					err = fmt.Errorf("unknown style '%s' (ascii, braille, blocks)", c)
 				}
 			}
 		case "--crease":
@@ -329,6 +348,9 @@ func run(s *system, argv []string) error {
 	}
 	soup = nil
 	r := &Renderer{m: mesh, aspect: o.aspect, invert: o.invert}
+	if ct := s.getenv("COLORTERM"); ct == "truecolor" || ct == "24bit" {
+		r.truecolor = true // the terminal says it can show every grey, not just 26 of them
+	}
 
 	if interactive {
 		t, err := s.openTerm()
@@ -353,6 +375,9 @@ func run(s *system, argv []string) error {
 	frame, err := r.FrameText(&o.view, cols, rows)
 	if err != nil {
 		return err
+	}
+	if o.view.style == styleBlocks && o.out == "" && tty {
+		defer s.colourOut()()
 	}
 	if crop {
 		frame = strings.Trim(frame, "\n") + "\n"

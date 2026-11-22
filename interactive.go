@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const helpLine = " ws tilt | ad spin | zx roll | WASD pan | i/o zoom | m mode | r reset | p save | ? help | q quit"
+const helpLine = " ws tilt | ad spin | zx roll | WASD pan | i/o zoom | m mode | c chars | r reset | p save | ? help | q quit"
 
 func runInteractive(s *system, t terminal, r *Renderer, v *View, name string) error {
 	size := func() (int, int, bool) { // never trust the terminal to report something sane
@@ -119,6 +119,8 @@ func runInteractive(s *system, t terminal, r *Renderer, v *View, name string) er
 					v.zoom = math.Max(0.02, v.zoom/zoomStep)
 				case 'm':
 					v.mode = (v.mode + 1) % len(modes)
+				case 'c':
+					v.style = (v.style + 1) % len(styles)
 				case 'r', '0':
 					v.rotX, v.rotY, v.rotZ = defRX, defRY, defRZ
 					v.zoom, v.panX, v.panY = 1, 0, 0
@@ -144,22 +146,26 @@ func runInteractive(s *system, t terminal, r *Renderer, v *View, name string) er
 
 func draw(t terminal, r *Renderer, v *View, name string, cols, rows int, msg string) error {
 	vr := max(1, rows-1)
-	g, err := r.Render(v, cols, vr)
+	lines, err := r.Lines(v, cols, vr)
 	if err != nil {
 		return err
 	}
 	var sb bytes.Buffer
 	sb.Grow(cols*rows + rows*8 + 64)
 	sb.WriteString("\x1b[H")
-	for row := 0; row < vr; row++ {
-		sb.Write(bytes.TrimRight(g[row*cols:(row+1)*cols], " "))
+	for _, line := range lines {
+		sb.Write(line)
 		sb.WriteString("\x1b[K\r\n")
 	}
 	status := msg
 	if status == "" {
 		m := r.m
+		look := modes[v.mode]
+		if v.style != styleASCII {
+			look += " " + styles[v.style]
+		}
 		status = fmt.Sprintf(" %s | %d tris | %s x %s x %s | %s | view %s | ? help",
-			name, m.nt, num(m.dimX, 1), num(m.dimY, 1), num(m.dimZ, 1), modes[v.mode], viewArgs(v))
+			name, m.nt, num(m.dimX, 1), num(m.dimY, 1), num(m.dimZ, 1), look, viewArgs(v))
 	}
 	// The status bar shows a file name, which is not ours: plain ASCII only.
 	line := make([]byte, 0, cols)
@@ -220,7 +226,15 @@ func save(s *system, text, name string, v *View) string {
 				lastErr = err
 				break
 			}
-			return " saved " + p + "   (rndr " + name + " " + viewArgs(v) + ")"
+			// the command that prints this same frame
+			again := "rndr " + name + " " + viewArgs(v)
+			if v.mode != modeBoth {
+				again += " -m " + modes[v.mode]
+			}
+			if v.style != styleASCII {
+				again += " -c " + styles[v.style]
+			}
+			return " saved " + p + "   (" + again + ")"
 		}
 	}
 	return fmt.Sprintf(" save failed: %v", lastErr)

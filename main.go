@@ -29,6 +29,9 @@ type system struct {
 	stdoutIsTerm   func() bool
 	termSize       func() (cols, rows int, ok bool)
 	getenv         func(string) string
+	// colourOut makes sure a terminal on stdout will act on colour codes; the
+	// returned function undoes it.
+	colourOut func() (restore func())
 
 	// fileExists reports whether path names something that could be opened.
 	fileExists func(path string) bool
@@ -97,6 +100,7 @@ func realSystem() *system {
 		stdinIsTerm:  func() bool { return isTerminal(os.Stdin) },
 		stdoutIsTerm: func() bool { return isTerminal(os.Stdout) },
 		termSize:     terminalSize,
+		colourOut:    colourOut,
 		getenv:       os.Getenv,
 		fileExists: func(path string) bool {
 			_, err := os.Stat(path)

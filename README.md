@@ -1,7 +1,7 @@
 # rndr
 
 <p align="center">
-  <img src="docs/goose.gif" width="600" alt="A low-poly goose rendered as ASCII art, spinning while rndr cycles through its shaded, wireframe and mesh modes">
+  <img src="docs/goose.gif" width="600" alt="A low-poly goose spinning in a terminal while rndr draws it as ASCII art, then in braille dots, then in grey half-block pixels">
 </p>
 
 [![release](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml)
@@ -10,7 +10,8 @@
 [![licence: MIT](https://img.shields.io/github/license/ryanjjohnson/rndr)](LICENSE)
 [![vibe coded with Claude](https://img.shields.io/badge/vibe%20coded-with%20Claude-d97757)](#the-prompt)
 
-ASCII previewer for 3D models in the terminal: STL, OBJ and 3MF.
+ASCII previewer for 3D models in the terminal: STL, OBJ and 3MF. Plain ASCII by default, with
+braille and half-block output when you want more detail than ASCII can carry.
 
 One static binary with no dependencies: no runtime to install, no external programs.
 Written in Go using only the standard library.
@@ -44,7 +45,8 @@ This program was written by Claude from a single request. Tidied up, it read:
 The original asked for zsh. That lasted about four seconds before being amended to
 "something very portable", which became Java and then, so that it could be shared with
 people whose NAS has no Java, Go. OBJ and 3MF support, width-only sizing, the release
-pipeline and this section were follow-up requests in the same conversation.
+pipeline, braille and half-block output, and this section were follow-up requests in the same
+conversation.
 
 ## Install
 
@@ -107,6 +109,8 @@ rndr part.3mf 94 0 0 1.0          print one frame: RX RY RZ [ZOOM [PANX PANY]]
 rndr part.obj -p                  print the default view
 rndr part.stl 25 -30 0 -s 100x40 -m wire -o part.txt
 rndr part.stl -p -s 100           100 columns wide, as many rows as the model needs
+rndr part.stl -p -c braille       8x the detail, still plain text
+rndr part.stl -p -c blocks        grey pixels, for a colour terminal
 cat part.stl | rndr                interactive, model from stdin
 curl -s https://example.com/part.3mf | rndr 25 -30 0 -s 100
 ```
@@ -118,7 +122,8 @@ data itself, so `unzip -p bundle.zip part.stl | rndr` works with no hint about w
 `0 0 0` is the front view with model Z up. Zoom 1.0 fits the whole model.
 
 Interactive keys: `w/s` tilt, `a/d` spin, `z/x` roll, `W/A/S/D` pan, `i/o` zoom,
-`m` cycle mode, `r` reset, `p` save the frame, `?` help, `q` quit.
+`m` cycle mode, `c` cycle ascii / braille / blocks, `r` reset, `p` save the frame, `?` help,
+`q` quit.
 
 `p` writes `NAME.rndr.txt` into the current directory (the temp dir if that is read-only).
 The status bar always shows the `view` numbers that reproduce the current frame from the
@@ -126,6 +131,20 @@ command line.
 
 Modes: `both` (shading + feature edges), `wire` (feature edges and silhouette, hidden lines
 removed), `mesh` (every triangle edge), `xray` (see-through mesh), `shade`.
+
+What it draws with (`-c`, or the `c` key):
+
+| Style | Detail per character | Needs | Saved to a file |
+|---|---|---|---|
+| `ascii` (default) | one shading or line character | nothing: any terminal, font, pager or printer | plain text |
+| `braille` | 2 x 4 dots, so lines are 8 times finer | a UTF-8 terminal | plain UTF-8 text |
+| `blocks` | 2 grey pixels (`▀`), smooth shading | a terminal with 256 colours | text with colour codes: view it with `cat` or `less -R` |
+
+Braille is the one to use for wireframes; blocks is the one for shading. `blocks` uses the 26
+greys every 256-colour terminal has, or all 256 when `COLORTERM` says the terminal is
+truecolor. Line drawings in `blocks` (`wire`, `mesh`, `xray`) use no colour at all, only the
+terminal's own text colour. `--invert` is for dark-on-light terminals with `ascii` and
+`braille`; `blocks` looks the same on any background.
 
 Print mode sizes the frame from `-s`, then `FZF_PREVIEW_COLUMNS/LINES`, then the terminal,
 then 80x24, so it works as a file-manager previewer:
@@ -157,7 +176,10 @@ Model files come from anywhere, so rndr treats every input as hostile.
 - **Abuse XML.** 3MF is read by a small tag scanner that has no entities or DTDs (a file with a
   DTD is refused), so XXE and "billion laughs" do not apply.
 - **Take over the terminal.** A render contains only the characters `` .,:;=+*#%@-|/\ ``, spaces
-  and newlines. File names and error text are stripped of control characters before printing.
+  and newlines. With `-c braille` it is braille patterns instead; with `-c blocks` it is `▀`,
+  `▄`, `█` and colour codes that select a grey and nothing else, every line ending with the
+  colours reset. Which of those you get is decided by your `-c` option or `c` key, never by
+  the file. File names and error text are stripped of control characters before printing.
 - **Exhaust the machine.** Everything a file can make rndr spend is capped:
 
 | Limit | Default | Stops |
@@ -186,9 +208,10 @@ zip bomb, oversized tag, DTD/entities, path escape, lying STL headers, hash floo
 extreme and non-finite numbers, escape sequences). `cli_test.go` runs the real program against a
 fake terminal and disk to test arguments, stdin detection and the interactive keys. Ten fuzz
 targets cover every way data gets in: each file format, raw zip bytes, stdin in arbitrary
-pieces, argument lists, keystrokes on arbitrary terminal sizes, and view numbers. Every fuzz run
-also fails on output outside the allowed characters, on a terminal left un-restored, and on any
-input that is merely slow. CI runs all of it on every push, on 64-bit and 32-bit, with the race
+pieces, argument lists, keystrokes on arbitrary terminal sizes, and view numbers, each in all
+three output styles. Every fuzz run also fails on output outside what its style allows (down to
+the exact spelling of each colour code), on a frame wider than asked for, on a terminal left
+un-restored, and on any input that is merely slow. CI runs all of it on every push, on 64-bit and 32-bit, with the race
 detector, plus `govulncheck` and CodeQL, and a longer fuzzing pass weekly.
 
 **What is not covered.** A crash from running out of memory is still possible on a machine with
@@ -211,6 +234,7 @@ sensitive.
 - `security_test.go`, `cli_test.go`: hostile-input tests and fuzz targets
 - `mesh.go`: vertex welding, normals, edge detection
 - `render.go`: projection, rasteriser, edge drawing, shading
+- `styles.go`: braille and half-block output
 - `term_*.go`: raw keyboard input and terminal size per operating system
 - `docs/`: the animation above and `make-demo.py`, the script that regenerates it
 - `testdata/`: a small model and its expected render, used by the release smoke test

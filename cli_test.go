@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- fake system -------------------------------------------------------------
@@ -54,6 +55,17 @@ type fake struct {
 	termOpened    int
 	interruptSet  int
 	interruptStop int
+	colourOn      int
+	colourOff     int
+	style         int  // what the command line asked for (see expect)
+	anyStyle      bool // the c key may have been pressed
+}
+
+// expect works out, from the command line alone, which style the output must be in.
+func (f *fake) expect(args []string) {
+	if o, err := parseArgs(args, f.sys.fileExists, !f.sys.stdinIsTerm()); err == nil {
+		f.style = o.view.style
+	}
 }
 
 // newFake builds a system whose stdin carries stdin (nil = a keyboard).
@@ -67,7 +79,11 @@ func newFake(files map[string][]byte, stdin io.Reader) *fake {
 		stdoutIsTerm: func() bool { return f.stdoutTTY },
 		termSize:     func() (int, int, bool) { return f.termCols, f.termRows, f.termCols > 0 && f.termRows > 0 },
 		getenv:       func(k string) string { return f.env[k] },
-		fileExists:   func(p string) bool { _, ok := f.files[p]; return ok },
+		colourOut: func() func() {
+			f.colourOn++
+			return func() { f.colourOff++ }
+		},
+		fileExists: func(p string) bool { _, ok := f.files[p]; return ok },
 		openFile: func(p string) (io.ReadCloser, int64, error) {
 			d, ok := f.files[p]
 			if !ok {
@@ -112,6 +128,26 @@ func printableASCII(s string) int {
 	return strings.IndexFunc(s, func(c rune) bool { return c != '\n' && (c < ' ' || c > '~') })
 }
 
+// screenProblem checks what is left of the terminal stream once the sequences
+// above are removed, when braille or blocks may have been on screen: printable
+// ASCII, braille, blocks and grey colour codes, and nothing else.
+func screenProblem(s string) int {
+	for i := 0; i < len(s); {
+		c, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case c >= ' ' && c <= '~', c > 0x2800 && c <= 0x28ff, c == '▀', c == '▄', c == '█':
+		case c == 0x1b:
+			if size, _, _ = colourCode(s[i:]); size == 0 {
+				return i
+			}
+		default:
+			return i
+		}
+		i += size
+	}
+	return -1
+}
+
 // check asserts the invariants that must hold after any run, whatever the input:
 // only expected bytes reach stdout, files and the terminal, and the terminal is
 // always handed back.
@@ -122,20 +158,27 @@ func (f *fake) check(t testing.TB, err error, info bool) {
 		if i := printableASCII(out); i >= 0 {
 			t.Fatalf("stdout has byte %q", out[i])
 		}
-	} else if i := onlyFrom(out, allowedOutput); i >= 0 {
-		t.Fatalf("stdout has unexpected byte %q", out[i])
+	} else if i := frameProblem(out, f.style); i >= 0 {
+		t.Fatalf("stdout is not a %s frame at byte %d", styles[f.style], i)
 	}
 	if f.errOut.Len() > 0 {
 		t.Fatalf("run wrote to stderr itself: %q", f.errOut.String())
 	}
+	if f.colourOn != f.colourOff {
+		t.Fatalf("console colour switched on %d times, put back %d", f.colourOn, f.colourOff)
+	}
 	for p, d := range f.written {
-		if i := onlyFrom(string(d), allowedOutput); i >= 0 {
-			t.Fatalf("-o file %q has unexpected byte %q", p, d[i])
+		if i := frameProblem(string(d), f.style); i >= 0 {
+			t.Fatalf("-o file %q is not a %s frame at byte %d", p, styles[f.style], i)
 		}
 	}
 	for p, d := range f.created {
-		if i := onlyFrom(string(d), allowedOutput); i >= 0 {
-			t.Fatalf("saved file %q has unexpected byte %q", p, d[i])
+		i := frameProblem(string(d), f.style)
+		if f.anyStyle {
+			i = anyStyleProblem(string(d))
+		}
+		if i >= 0 {
+			t.Fatalf("saved file %q has an unexpected byte at %d", p, i)
 		}
 		dir, base := filepath.Split(p)
 		if (dir != "/cwd/" && dir != "/tmp/") || strings.HasPrefix(base, ".") || strings.HasPrefix(base, "-") ||
@@ -151,7 +194,11 @@ func (f *fake) check(t testing.TB, err error, info bool) {
 			t.Fatalf("interrupt handler set %d times, removed %d", f.interruptSet, f.interruptStop)
 		}
 		screen := terminalSequences.Replace(f.term.out.String())
-		if i := printableASCII(screen); i >= 0 || strings.ContainsRune(screen, '\n') {
+		i := printableASCII(screen)
+		if f.anyStyle || f.style != styleASCII {
+			i = screenProblem(screen)
+		}
+		if i >= 0 || strings.ContainsRune(screen, '\n') {
 			t.Fatalf("terminal received an unexpected byte (at %d of %d)", i, len(screen))
 		}
 	}
@@ -197,6 +244,7 @@ func runCLI(t testing.TB, stdin []byte, args ...string) (*fake, error) {
 	saved := maxTriangles
 	defer func() { maxTriangles = saved }()
 	f := newFake(testFiles(), in)
+	f.expect(args)
 	err := run(f.sys, args)
 	f.check(t, err, false)
 	return f, err
@@ -325,6 +373,64 @@ func TestOptionsDoWhatTheySay(t *testing.T) {
 	}
 }
 
+func TestBrailleAndBlocks(t *testing.T) {
+	for _, style := range []string{"braille", "blocks"} {
+		want := string(mustRead("testdata/bracket." + style + ".txt"))
+		f, err := runCLI(t, nil, "bracket.stl", "25", "-30", "0", "1", "-s", "60x20", "-c", style)
+		if err != nil || f.out.String() != want {
+			t.Errorf("%s: render differs from testdata/bracket.%s.txt (err %v)", style, style, err)
+		}
+		f, err = runCLI(t, bracketSTL, "--chars", style, "25", "-30", "0", "1", "-s", "60x20", "-o", "out.txt")
+		if err != nil || f.out.Len() != 0 || string(f.written["out.txt"]) != want {
+			t.Errorf("%s from stdin to -o: err %v", style, err)
+		}
+		for _, m := range modes {
+			f, err := runCLI(t, nil, "bracket.stl", "-p", "-s", "41x13", "-c", style, "-m", m, "--invert")
+			out := f.out.String()
+			if err != nil || strings.TrimSpace(out) == "" || strings.Count(out, "\n") != 13 || cellsWide(out) > 41 {
+				t.Errorf("%s %s: err %v, %d lines, %d cells wide", style, m, err, strings.Count(out, "\n"), cellsWide(out))
+			}
+		}
+		f, _ = runCLI(t, nil, "bracket.stl", "-p", "-s", "40", "-c", style)
+		if n := strings.Count(f.out.String(), "\n"); n < 5 || n > 20 || strings.HasPrefix(f.out.String(), "\n") {
+			t.Errorf("%s: width-only size gave %d rows", style, n)
+		}
+	}
+
+	// a line drawing in blocks is the terminal's own colours: no codes at all
+	f, _ := runCLI(t, nil, "bracket.stl", "-p", "-s", "40x12", "-c", "blocks", "-m", "wire")
+	if out := f.out.String(); strings.Contains(out, "\x1b") || !strings.ContainsAny(out, "▀▄█") {
+		t.Errorf("blocks wire: %q", out)
+	}
+	if f.colourOn != 0 {
+		t.Error("console colour was switched on although stdout is not a terminal")
+	}
+
+	// shading uses the 256-colour greys unless the terminal says it has them all
+	for _, truecolor := range []bool{false, true} {
+		fk := newFake(testFiles(), nil)
+		fk.stdoutTTY, fk.termCols, fk.termRows = true, 50, 20
+		args := []string{"bracket.stl", "-p", "-c", "blocks"}
+		if truecolor {
+			fk.env["COLORTERM"] = "truecolor"
+		}
+		fk.expect(args)
+		err := run(fk.sys, args)
+		fk.check(t, err, false)
+		out := fk.out.String()
+		if err != nil || strings.Contains(out, ";2;") != truecolor || strings.Contains(out, ";5;") == truecolor || fk.colourOn != 1 {
+			t.Errorf("truecolor %v: err %v, colour switched on %d times, output %q...", truecolor, err, fk.colourOn, out[:min(len(out), 60)])
+		}
+	}
+
+	for _, args := range [][]string{{"bracket.stl", "-c"}, {"bracket.stl", "-c", "sixel"}, {"bracket.stl", "-c", ""},
+		{"bracket.stl", "--chars", "BRAILLE"}, {"bracket.stl", "-c", "blocks\x1b[31m"}} {
+		if f, err := runCLI(t, nil, args...); err == nil || f.out.Len() > 0 {
+			t.Errorf("%q was accepted", args)
+		}
+	}
+}
+
 func TestFrameSizeFromTheEnvironmentIsClamped(t *testing.T) {
 	saved := maxTriangles
 	defer func() { maxTriangles = saved }()
@@ -448,6 +554,7 @@ func interactiveRun(t testing.TB, name string, cols, rows int, keys ...string) (
 	f.term = &fakeTerm{cols: cols, rows: rows}
 	for _, k := range keys {
 		f.term.keys = append(f.term.keys, []byte(k))
+		f.anyStyle = f.anyStyle || strings.Contains(k, "c")
 	}
 	err := run(f.sys, []string{"--", name})
 	f.check(t, err, false)
@@ -472,6 +579,27 @@ func TestInteractiveKeysAndSave(t *testing.T) {
 	again, err := runCLI(t, nil, "bracket.stl", "15", "-20", "0", "1.322", "0.1", "0.1", "-m", "wire", "-s", "100x29")
 	if err != nil || again.out.String() != string(f.created["/cwd/bracket.rndr.txt"]) {
 		t.Errorf("CLI does not reproduce the saved frame (err %v)", err)
+	}
+}
+
+func TestInteractiveStyleKey(t *testing.T) {
+	f, err := interactiveRun(t, "bracket.stl", 100, 30, "c", "p", "c", "p", "c", "p", "?", "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := f.term.out.String()
+	for _, want := range []string{"| both braille |", "| both blocks |", "c chars", "(rndr bracket.stl 25 -30 0 1 -c braille)"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("screen never showed %q", want)
+		}
+	}
+	// p saves what is on screen, and the command line reproduces it
+	for i, style := range []string{"braille", "blocks", "ascii"} {
+		name := "/cwd/bracket.rndr" + []string{"", "-2", "-3"}[i] + ".txt"
+		again, err := runCLI(t, nil, "bracket.stl", "25", "-30", "0", "1", "-s", "100x29", "-c", style)
+		if err != nil || f.created[name] == nil || again.out.String() != string(f.created[name]) {
+			t.Errorf("%s: CLI does not reproduce the saved frame %s (err %v; saved %v)", style, name, err, keysOf(f.created))
+		}
 	}
 }
 
@@ -584,6 +712,8 @@ func FuzzArgs(f *testing.F) {
 		"-\x0010\x0020\x0030", "10\x0020\x0030\x002", "-p", "", "-i\x00bin.stl", "--\x00-dash.stl\x00-p", "94\x00-p", "noext\x00-p\x00-s\x00x20",
 		"-h", "--version", "bin.stl\x00-s\x00240x100\x00-m\x00mesh\x000\x000\x000\x001e6", "bin.stl\x00-m", "bin.stl\x00--nope\x00-s",
 		"evil\x1b]0;PWNED\x07\x1b[2J.stl\x00-p", "missing\x1b[2J.stl", "bin.stl\x00-o\x00../../etc/passwd\x00-p",
+		"bracket.stl\x00-p\x00-c\x00braille", "t.obj\x00-c\x00blocks\x00-s\x0033\x00-m\x00shade", "bin.stl\x00--chars\x00blocks\x00-o\x00o.txt",
+		"t.3mf\x00-c\x00braille\x00--invert\x00-m\x00xray\x0010\x0020\x0030", "bin.stl\x00-c", "bin.stl\x00-c\x00\x1b[31m", "-c\x00ascii\x00-i\x00t.obj",
 	} {
 		f.Add([]byte(s), uint8(0), []byte(nil))
 		f.Add([]byte(s), uint8(7), smallOBJ)
@@ -606,9 +736,14 @@ func FuzzArgs(f *testing.F) {
 		fk := newFake(testFiles(), in)
 		fk.stdoutTTY = flags&2 != 0
 		if flags&4 != 0 {
-			fk.term = &fakeTerm{cols: 20 + int(flags>>3), rows: 6 + int(flags>>4), keys: [][]byte{[]byte("dwip"), []byte("m?q")}}
+			fk.term = &fakeTerm{cols: 20 + int(flags>>3), rows: 6 + int(flags>>4), keys: [][]byte{[]byte("dwip"), []byte("m?cp"), []byte("cpq")}}
 			fk.termCols, fk.termRows = fk.term.cols, fk.term.rows
+			fk.anyStyle = true
 		}
+		if flags&8 != 0 {
+			fk.env["COLORTERM"] = "truecolor"
+		}
+		fk.expect(args)
 		var err error
 		promptly(t, "run", func() { err = run(fk.sys, args) })
 		info := err == nil && fk.out.Len() > 0 && (strings.HasPrefix(fk.out.String(), "usage:") || strings.HasPrefix(fk.out.String(), "rndr "))
@@ -623,7 +758,8 @@ func FuzzArgs(f *testing.F) {
 func FuzzKeys(f *testing.F) {
 	fuzzFrameLimits(f)
 	for _, k := range []string{"wasdWASDiozxmr0?hp", "\x1b[A\x1b[B\x1b[C\x1b[D\x1bOA", "\x1b", "\x1b\x1b[", "pppppppp", "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
-		"oooooooooooooooooooooooooooooooooooooooooooooooooo", "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDmmmmm", "\x03", "\x04", "q", "", "\x00\xff\x1b[Z\x7f"} {
+		"oooooooooooooooooooooooooooooooooooooooooooooooooo", "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDmmmmm", "\x03", "\x04", "q", "", "\x00\xff\x1b[Z\x7f",
+		"cpcpcp", "cmcmcmcmcmpWcip", "ccdddiiiipmpmpmpmp"} {
 		f.Add([]byte(k), uint16(80), uint16(24), uint8(3), uint8(0))
 		f.Add([]byte(k), uint16(1), uint16(1), uint8(1), uint8(1))
 		f.Add([]byte(k), uint16(65535), uint16(65535), uint8(200), uint8(2))
@@ -638,6 +774,10 @@ func FuzzKeys(f *testing.F) {
 		fk := newFake(testFiles(), nil)
 		fk.stdoutTTY = true
 		fk.term = &fakeTerm{cols: int(cols), rows: int(rows)}
+		fk.anyStyle = bytes.IndexByte(keys, 'c') >= 0
+		if model&0x80 != 0 {
+			fk.env["COLORTERM"] = "24bit"
+		}
 		for n := max(1, int(chunk)); len(keys) > 0; {
 			n = min(n, len(keys))
 			fk.term.keys, keys = append(fk.term.keys, keys[:n]), keys[n:]
@@ -658,6 +798,9 @@ func FuzzView(f *testing.F) {
 	f.Add(-1e9, 1e9, 359.999, 1e6, 1e6, -1e6, 0.2, 0.0, uint16(240), uint16(100), uint8(7))
 	f.Add(90.0, 90.0, 90.0, 1e-6, -1e6, 1e6, 10.0, 180.0, uint16(2), uint16(2), uint8(11))
 	f.Add(math.SmallestNonzeroFloat64, -0.0, 1e-300, 0.999999, 0.5, 0.5, 1.0, 29.9999, uint16(3), uint16(99), uint8(19))
+	for sel := 0; sel < 256; sel += 4 { // every mode, style and invert combination, on the bracket
+		f.Add(25.0, -30.0, 0.0, 1.0, 0.0, 0.0, 2.0, 30.0, uint16(60), uint16(20+sel/4%2), uint8(sel))
+	}
 	meshes := map[uint64]*Mesh{}
 	datas := [][]byte{bracketSTL, smallBinSTL, smallOBJ, small3MF}
 	f.Fuzz(func(t *testing.T, rx, ry, rz, zoom, px, py, aspect, crease float64, cols, rows uint16, sel uint8) {
@@ -690,15 +833,19 @@ func FuzzView(f *testing.F) {
 				meshes[key] = m
 			}
 		}
-		r := &Renderer{m: m, aspect: aspect, invert: sel&0x80 != 0}
-		v := &View{rotX: rx, rotY: ry, rotZ: rz, zoom: zoom, panX: px, panY: py, mode: int(sel>>2) % len(modes)}
+		// sel packs the model, mode, style and invert; every combination is reachable
+		r := &Renderer{m: m, aspect: aspect, invert: sel&0x80 != 0, truecolor: rows&1 == 1}
+		v := &View{rotX: rx, rotY: ry, rotZ: rz, zoom: zoom, panX: px, panY: py, mode: int(sel>>2) % len(modes), style: int(sel>>5) % len(styles)}
 		promptly(t, "render", func() {
 			text, err := r.FrameText(v, int(cols), int(rows))
 			if err != nil && err != errTooExpensive {
 				t.Fatal(err)
 			}
-			if i := onlyFrom(text, allowedOutput); i >= 0 {
-				t.Fatalf("output has unexpected byte %q", text[i])
+			if i := frameProblem(text, v.style); i >= 0 {
+				t.Fatalf("%s output is wrong at byte %d", styles[v.style], i)
+			}
+			if w := cellsWide(text); w > int(cols) {
+				t.Fatalf("asked for %d columns, got %d", cols, w)
 			}
 			if err == nil && strings.Count(text, "\n") != int(rows) {
 				t.Fatalf("asked for %d rows, got %d", rows, strings.Count(text, "\n"))

@@ -70,6 +70,8 @@ jobs:
         run: |
           ./dist/rndr-linux-amd64 --version
           ./dist/rndr-linux-amd64 testdata/bracket.stl 25 -30 0 1 -s 60x20 | diff - testdata/bracket.expected.txt
+          ./dist/rndr-linux-amd64 testdata/bracket.stl 25 -30 0 1 -s 60x20 -c braille | diff - testdata/bracket.braille.txt
+          ./dist/rndr-linux-amd64 testdata/bracket.stl 25 -30 0 1 -s 60x20 -c blocks | diff - testdata/bracket.blocks.txt
 
       # Signs a statement that these exact files were built by this workflow from
       # this commit. Anyone can check a download with: gh attestation verify

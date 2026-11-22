@@ -16,7 +16,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write     # create the tag and release
+  id-token: write     # prove to Sigstore that this workflow run is the signer
+  attestations: write # store the signed provenance with the repository
 
 concurrency:
   group: release
@@ -66,6 +68,13 @@ jobs:
         run: |
           ./dist/rndr-linux-amd64 --version
           ./dist/rndr-linux-amd64 testdata/bracket.stl 25 -30 0 1 -s 60x20 | diff - testdata/bracket.expected.txt
+
+      # Signs a statement that these exact files were built by this workflow from
+      # this commit. Anyone can check a download with: gh attestation verify
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/rndr-*
 
       - name: Publish
         env:

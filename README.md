@@ -60,6 +60,17 @@ your PATH and name it `rndr` (on Mac and Linux, also `chmod +x rndr`):
 | Linux or NAS, 32-bit ARM | `rndr-linux-armv7` |
 | Windows | `rndr-windows-amd64.exe` |
 
+Every release binary carries signed build provenance: proof that it was built by this
+repository's GitHub Actions workflow from the tagged commit. To check a download, with the
+[GitHub CLI](https://cli.github.com) installed:
+
+```bash
+gh attestation verify rndr-linux-amd64 --repo ryanjjohnson/rndr
+```
+
+`SHA256SUMS.txt` in each release covers accidental corruption if you would rather not install
+anything.
+
 On a Mac, a downloaded binary is quarantined; clear that with
 `xattr -d com.apple.quarantine rndr`, or build from source.
 
@@ -159,8 +170,9 @@ push, on 64-bit and 32-bit, with the race detector, plus a fuzzing pass, `govuln
 
 **What is not covered.** A crash from running out of memory is still possible on a machine with
 less RAM than the limits allow; it ends the program and nothing else. `-o` and the `p` key write
-exactly where you tell them to, with your permissions. Release binaries are built by GitHub
-Actions and come with checksums but are not signed.
+exactly where you tell them to, with your permissions. Release binaries carry signed
+build provenance (see Install), which shows where a binary was built, not that the source is
+free of bugs; they are not notarised by Apple or signed for Windows SmartScreen.
 
 Found a problem? Please open an issue, or email the address in the commit log for anything
 sensitive.

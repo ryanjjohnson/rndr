@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"math"
 )
 
@@ -42,6 +43,20 @@ type Renderer struct {
 	edgeCh           []byte
 	edgeHits         []int32 // samples an edge left in each cell
 	bufW, bufH, cols int
+	work             int64 // samples visited this frame, against maxRenderWork
+}
+
+var errTooExpensive = errors.New("model is too expensive to draw at this size (overdraw limit); try a smaller frame")
+
+// clampInt converts to int without ever leaving [lo, hi], whatever f is (huge, NaN, ...).
+func clampInt(f float64, lo, hi int) int {
+	if !(f > float64(lo)) {
+		return lo
+	}
+	if f > float64(hi) {
+		return hi
+	}
+	return int(f)
 }
 
 var negInf = float32(math.Inf(-1))
@@ -70,7 +85,7 @@ func euler(rx, ry, rz float64) [9]float64 {
 }
 
 // Render draws the view into a cols x rows grid of characters (row-major).
-func (r *Renderer) Render(v *View, cols, rows int) []byte {
+func (r *Renderer) Render(v *View, cols, rows int) ([]byte, error) {
 	m := r.m
 	W, H := cols*subX, rows*subY
 	ratio := r.aspect * subX / subY // sample height / sample width
@@ -130,8 +145,11 @@ func (r *Renderer) Render(v *View, cols, rows int) []byte {
 	}
 	r.bufW, r.bufH, r.cols = W, H, cols
 
+	r.work = 0
 	if v.mode != modeXray {
-		r.rasterFaces()
+		if err := r.rasterFaces(); err != nil {
+			return nil, err
+		}
 	}
 
 	if v.mode != modeShade {
@@ -150,6 +168,9 @@ func (r *Renderer) Render(v *View, cols, rows int) []byte {
 				}
 			}
 			r.drawEdge(e, depth, ratio, slash)
+			if r.work > maxRenderWork {
+				return nil, errTooExpensive
+			}
 		}
 	}
 
@@ -187,10 +208,10 @@ func (r *Renderer) Render(v *View, cols, rows int) []byte {
 			out[cell] = ch
 		}
 	}
-	return out
+	return out, nil
 }
 
-func (r *Renderer) rasterFaces() {
+func (r *Renderer) rasterFaces() error {
 	m := r.m
 	W, H := r.bufW, r.bufH
 	for f := 0; f < m.nt; f++ {
@@ -198,15 +219,18 @@ func (r *Renderer) rasterFaces() {
 		ax, ay := float64(r.X[ia]), float64(r.Y[ia])
 		bx, by := float64(r.X[ib]), float64(r.Y[ib])
 		cx, cy := float64(r.X[ic]), float64(r.Y[ic])
-		x0 := max(0, int(math.Ceil(math.Min(ax, math.Min(bx, cx))-0.5)))
-		x1 := min(W-1, int(math.Floor(math.Max(ax, math.Max(bx, cx))-0.5)))
+		x0 := clampInt(math.Ceil(math.Min(ax, math.Min(bx, cx))-0.5), 0, W)
+		x1 := clampInt(math.Floor(math.Max(ax, math.Max(bx, cx))-0.5), -1, W-1)
 		if x0 > x1 {
 			continue
 		}
-		y0 := max(0, int(math.Ceil(math.Min(ay, math.Min(by, cy))-0.5)))
-		y1 := min(H-1, int(math.Floor(math.Max(ay, math.Max(by, cy))-0.5)))
+		y0 := clampInt(math.Ceil(math.Min(ay, math.Min(by, cy))-0.5), 0, H)
+		y1 := clampInt(math.Floor(math.Max(ay, math.Max(by, cy))-0.5), -1, H-1)
 		if y0 > y1 {
 			continue
+		}
+		if r.work += int64(x1-x0+1) * int64(y1-y0+1); r.work > maxRenderWork {
+			return errTooExpensive
 		}
 		area := (bx-ax)*(cy-ay) - (by-ay)*(cx-ax)
 		if area == 0 {
@@ -233,6 +257,7 @@ func (r *Renderer) rasterFaces() {
 			}
 		}
 	}
+	return nil
 }
 
 func (r *Renderer) drawEdge(e int, depth bool, ratio, slash float64) {
@@ -280,10 +305,12 @@ func (r *Renderer) drawEdge(e int, depth bool, ratio, slash float64) {
 	}
 
 	// two samples per sample-width, so a cell the line really crosses collects at least two hits
-	steps := int(math.Ceil(math.Max(math.Abs(dx), math.Abs(dy))*(t1-t0)*2)) + 1
+	// (after clipping the visible part is no longer than the frame, so this is bounded)
+	steps := clampInt(math.Ceil(math.Max(math.Abs(dx), math.Abs(dy))*(t1-t0)*2), 0, 2*(r.bufW+r.bufH)) + 1
+	r.work += int64(steps)
 	for i := 0; i < steps; i++ {
 		t := t0 + (t1-t0)*float64(i)/float64(steps)
-		px, py := int(x0+dx*t), int(y0+dy*t)
+		px, py := clampInt(x0+dx*t, -1, r.bufW), clampInt(y0+dy*t, -1, r.bufH)
 		if px < 0 || py < 0 || px >= r.bufW || py >= r.bufH {
 			continue
 		}
@@ -319,13 +346,16 @@ func (r *Renderer) visible(px, py int, z float32) bool {
 }
 
 // FrameText is the frame as plain text: one line per row, trailing blanks removed.
-func (r *Renderer) FrameText(v *View, cols, rows int) string {
-	g := r.Render(v, cols, rows)
+func (r *Renderer) FrameText(v *View, cols, rows int) (string, error) {
+	g, err := r.Render(v, cols, rows)
+	if err != nil {
+		return "", err
+	}
 	var sb bytes.Buffer
 	sb.Grow(cols*rows + rows)
 	for row := 0; row < rows; row++ {
 		sb.Write(bytes.TrimRight(g[row*cols:(row+1)*cols], " "))
 		sb.WriteByte('\n')
 	}
-	return sb.String()
+	return sb.String(), nil
 }

@@ -12,13 +12,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
+	maxCols, maxRows    = 2000, 1000 // largest frame, whatever the terminal or -s claims
 	defRX, defRY, defRZ = 25.0, -30.0, 0.0
 	rotStep             = 5.0
 	panStep             = 0.1
@@ -48,6 +52,8 @@ options:
       --crease DEG     angle at which an edge counts as a feature edge (default 30)
       --aspect N       height/width of a character cell (default 2.0)
       --invert         reverse the shading ramp (for dark-on-light output)
+      --max-triangles N  refuse models with more triangles than this (default 5000000);
+                       this is what bounds memory: about 300 bytes per triangle
   -V, --version        print the version
 
 interactive keys:
@@ -59,10 +65,29 @@ interactive keys:
 `
 
 func main() {
+	// A bug must not turn into a stack trace full of whatever was being parsed.
+	defer func() {
+		if p := recover(); p != nil {
+			fmt.Fprintln(os.Stderr, "rndr: internal error:", printable(fmt.Sprint(p)))
+			os.Exit(2)
+		}
+	}()
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "rndr:", err)
+		fmt.Fprintln(os.Stderr, "rndr:", printable(err.Error()))
 		os.Exit(1)
 	}
+}
+
+// printable makes text safe to show on a terminal. File names, and error text
+// that quotes file contents, are attacker-controlled: without this an escape
+// sequence in a file name could retitle, clear or reprogram the terminal.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == utf8.RuneError || !unicode.IsPrint(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 func parseNum(s string) (float64, bool) {
@@ -144,6 +169,15 @@ func run(argv []string) error {
 		case a == "--crease":
 			i++
 			crease, err = needNum(i, a)
+		case a == "--max-triangles":
+			i++
+			var n float64
+			if n, err = needNum(i, a); err == nil {
+				if !(n >= 1 && n <= hardMaxTriangles) || n != math.Trunc(n) {
+					err = fmt.Errorf("--max-triangles must be a whole number between 1 and %d", hardMaxTriangles)
+				}
+				maxTriangles = int(n)
+			}
 		case a == "--aspect":
 			i++
 			if aspect, err = needNum(i, a); err == nil && !(aspect > 0.1 && aspect < 10) {
@@ -178,8 +212,11 @@ func run(argv []string) error {
 	if len(nums) >= 6 {
 		view.panX, view.panY = nums[4], nums[5]
 	}
-	if !(view.zoom > 0) {
-		return errors.New("zoom must be greater than 0")
+	if !(view.zoom >= 1e-6 && view.zoom <= 1e6) {
+		return errors.New("zoom must be between 0.000001 and 1000000")
+	}
+	if math.Abs(view.panX) > 1e6 || math.Abs(view.panY) > 1e6 {
+		return errors.New("pan must be between -1000000 and 1000000")
 	}
 
 	tty := stdoutIsTerminal()
@@ -192,13 +229,24 @@ func run(argv []string) error {
 	var err error
 	name := "stdin"
 	if file == "-" {
-		data, err = io.ReadAll(os.Stdin)
+		data, err = readLimited(os.Stdin)
 	} else {
 		name = filepath.Base(file)
-		if st, serr := os.Stat(file); serr != nil || st.IsDir() {
+		st, serr := os.Stat(file)
+		if serr != nil || st.IsDir() {
 			return fmt.Errorf("%s: no such file", file)
 		}
-		data, err = os.ReadFile(file)
+		if !st.Mode().IsRegular() { // devices and pipes never end; a model is a plain file
+			return fmt.Errorf("%s: not a regular file", file)
+		}
+		if st.Size() > maxInputBytes() {
+			return fmt.Errorf("%s: %v", file, errInputTooBig())
+		}
+		var f *os.File
+		if f, err = os.Open(file); err == nil {
+			data, err = readLimited(f)
+			f.Close()
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %v", file, err)
@@ -208,6 +256,7 @@ func run(argv []string) error {
 		return fmt.Errorf("%s: %v", name, err)
 	}
 	data = nil
+	runtime.GC() // the file's bytes are no longer needed; give them back before the mesh is built
 	mesh, err := buildMesh(soup, crease)
 	if err != nil {
 		return fmt.Errorf("%s: %v", name, err)
@@ -250,10 +299,13 @@ func run(argv []string) error {
 	} else {
 		cols, rows = defaultSize(tty && out == "")
 	}
-	if cols < 2 || rows < 2 || cols*rows > 4000000 {
-		return errors.New("unreasonable frame size")
+	if cols < 2 || rows < 2 || cols > maxCols || rows > maxRows {
+		return fmt.Errorf("frame size must be between 2x2 and %dx%d", maxCols, maxRows)
 	}
-	frame := r.FrameText(view, cols, rows)
+	frame, err := r.FrameText(view, cols, rows)
+	if err != nil {
+		return err
+	}
 	if cropRows {
 		frame = strings.Trim(frame, "\n") + "\n"
 	}
@@ -265,6 +317,19 @@ func run(argv []string) error {
 	}
 	_, err = os.Stdout.WriteString(frame)
 	return err
+}
+
+// readLimited reads everything, but refuses to go past maxInputBytes.
+func readLimited(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxInputBytes()+1))
+	if err == nil && int64(len(data)) > maxInputBytes() {
+		return nil, errInputTooBig()
+	}
+	return data, err
+}
+
+func errInputTooBig() error {
+	return fmt.Errorf("larger than %d MB, the most rndr will read at this --max-triangles", maxInputBytes()>>20)
 }
 
 func envInt(name string) int {
@@ -330,7 +395,11 @@ func runInteractive(r *Renderer, v *View, name string) error {
 	if err != nil {
 		return fmt.Errorf("interactive mode needs a terminal (%v); use -p to print a frame instead", err)
 	}
-	cols, rows, ok := t.Size()
+	size := func() (int, int, bool) { // never trust the terminal to report something sane
+		c, rw, ok := t.Size()
+		return min(c, maxCols), min(rw, maxRows), ok
+	}
+	cols, rows, ok := size()
 	if !ok {
 		t.Restore()
 		return errors.New("cannot read the terminal size; use -p to print a frame instead")
@@ -342,8 +411,14 @@ func runInteractive(r *Renderer, v *View, name string) error {
 	}
 	defer leave()
 
+	// Handled on its own goroutine so Ctrl-C works even while a frame is being drawn.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		leave()
+		os.Exit(130)
+	}()
 
 	keys := make(chan []byte)
 	go func() {
@@ -369,14 +444,14 @@ func runInteractive(r *Renderer, v *View, name string) error {
 			if help {
 				status = helpLine
 			}
-			draw(t, r, v, name, cols, rows, status)
+			if err := draw(t, r, v, name, cols, rows, status); err != nil {
+				return err
+			}
 			dirty = false
 		}
 		select {
-		case <-sigs:
-			return nil
 		case <-resize.C:
-			if c, rw, ok := t.Size(); ok && (c != cols || rw != rows) {
+			if c, rw, ok := size(); ok && (c != cols || rw != rows) {
 				cols, rows, dirty = c, rw, true
 			}
 		case b, open := <-keys:
@@ -430,7 +505,9 @@ func runInteractive(r *Renderer, v *View, name string) error {
 					v.rotX, v.rotY, v.rotZ = defRX, defRY, defRZ
 					v.zoom, v.panX, v.panY = 1, 0, 0
 				case 'p':
-					msg = save(r.FrameText(v, cols, max(1, rows-1)), name, v)
+					if text, err := r.FrameText(v, cols, max(1, rows-1)); err == nil {
+						msg = save(text, name, v)
+					}
 				case '?', 'h':
 					help = !help
 				case 'q', 3, 4:
@@ -445,9 +522,12 @@ func runInteractive(r *Renderer, v *View, name string) error {
 	}
 }
 
-func draw(t *rawTerm, r *Renderer, v *View, name string, cols, rows int, msg string) {
+func draw(t *rawTerm, r *Renderer, v *View, name string, cols, rows int, msg string) error {
 	vr := max(1, rows-1)
-	g := r.Render(v, cols, vr)
+	g, err := r.Render(v, cols, vr)
+	if err != nil {
+		return err
+	}
 	var sb bytes.Buffer
 	sb.Grow(cols*rows + rows*8 + 64)
 	sb.WriteString("\x1b[H")
@@ -476,6 +556,7 @@ func draw(t *rawTerm, r *Renderer, v *View, name string, cols, rows int, msg str
 	sb.Write(line)
 	sb.WriteString("\x1b[0m\x1b[K")
 	t.Write(sb.Bytes())
+	return nil
 }
 
 // save writes the frame next to where you are (or to the temp dir if that is read-only).

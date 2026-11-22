@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
+	"hash/maphash"
 	"math"
+	"runtime"
 )
 
 // Mesh is a welded triangle mesh, centred and scaled to fit a unit sphere.
@@ -24,13 +27,23 @@ const (
 	edgeFeature  = 4 // crease, boundary or non-manifold edge: always drawn
 )
 
-func mix(h uint32) uint32 {
-	h ^= h >> 16
-	h *= 0x85ebca6b
-	h ^= h >> 13
-	h *= 0xc2b2ae35
-	h ^= h >> 16
-	return h
+// The hash tables below are keyed with a seed chosen at random on every run.
+// With a fixed hash, a file could be built so that every vertex lands in the same
+// slot, turning the linear-time weld into a quadratic one (hash flooding).
+var hashSeed = maphash.MakeSeed()
+
+func hashVertex(x, y, z float32) uint32 {
+	var b [12]byte
+	binary.LittleEndian.PutUint32(b[0:], math.Float32bits(x))
+	binary.LittleEndian.PutUint32(b[4:], math.Float32bits(y))
+	binary.LittleEndian.PutUint32(b[8:], math.Float32bits(z))
+	return uint32(maphash.Bytes(hashSeed, b[:]))
+}
+
+func hashEdge(key uint64) uint32 {
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], key)
+	return uint32(maphash.Bytes(hashSeed, b[:]))
 }
 
 // buildMesh turns triangle soup (9 floats per triangle) into a Mesh.
@@ -57,6 +70,9 @@ func buildMesh(t []float32, creaseDeg float64) (*Mesh, error) {
 	if m.nt == 0 {
 		return nil, errors.New("no triangles found")
 	}
+	if m.nt > maxTriangles {
+		return nil, errTooManyTriangles()
+	}
 
 	// weld identical vertices
 	nc := m.nt * 3
@@ -74,7 +90,7 @@ func buildMesh(t []float32, creaseDeg float64) (*Mesh, error) {
 	nv := int32(0)
 	for c := 0; c < nc; c++ {
 		x, y, z := t[3*c]+0, t[3*c+1]+0, t[3*c+2]+0
-		i := mix(math.Float32bits(x)*73856093^math.Float32bits(y)*19349663^math.Float32bits(z)*83492791) & mask
+		i := hashVertex(x, y, z) & mask
 		for {
 			v := tab[i]
 			if v < 0 {
@@ -95,6 +111,9 @@ func buildMesh(t []float32, creaseDeg float64) (*Mesh, error) {
 	m.vx = append([]float32(nil), px[:nv]...)
 	m.vy = append([]float32(nil), py[:nv]...)
 	m.vz = append([]float32(nil), pz[:nv]...)
+
+	px, py, pz, tab, t = nil, nil, nil, nil, nil
+	runtime.GC() // drop the weld tables before the edge tables are allocated
 
 	// centre on the bounding box and scale to a unit sphere
 	x0, y0, z0 := math.MaxFloat64, math.MaxFloat64, math.MaxFloat64
@@ -167,7 +186,7 @@ func (m *Mesh) buildEdges(creaseDeg float64) {
 				lo, hi = b, a
 			}
 			key := uint64(lo)<<32 | uint64(hi)
-			i := mix(uint32(key)^uint32(key>>32)+uint32(lo)*31) & mask
+			i := hashEdge(key) & mask
 			for {
 				if keys[i] == empty {
 					keys[i] = key

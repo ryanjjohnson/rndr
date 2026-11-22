@@ -22,6 +22,24 @@ jobs:
           go-version: stable
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  hostile-input:
+    name: Hostile-input tests and fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Attack regression tests
+        run: go test -race ./...
+      - name: Same tests on a 32-bit build
+        run: GOARCH=386 go test ./...
+      - name: Fuzz every input format
+        run: |
+          for target in FuzzSTL FuzzOBJ FuzzModelXML Fuzz3MFZip FuzzSniff; do
+            go test -run '^$' -fuzz "^$target\$" -fuzztime 45s .
+          done
+
   codeql:
     name: Static analysis (CodeQL)
     runs-on: ubuntu-latest

@@ -78,7 +78,8 @@ Needs Go 1.21 or later.
 
 Every push to `main` that changes the program publishes a new release automatically, bumping
 the patch version. To choose the version yourself, push a tag such as `v0.2.0`.
-The `security` workflow runs `govulncheck` and CodeQL on every push and once a week.
+The `security` workflow runs `govulncheck`, CodeQL, the hostile-input tests and a fuzzing pass on
+every push and once a week.
 
 ## Use
 
@@ -119,16 +120,63 @@ fzf --preview 'rndr {} -p'
   in separate parts (as Bambu Studio, OrcaSlicer and PrusaSlicer write them). Colours and
   materials are ignored.
 
+## Security
+
+Model files come from anywhere, so rndr treats every input as hostile.
+
+**What a file cannot do**
+
+- **Corrupt memory or run code.** rndr is Go with no C code and no third-party packages; every
+  array access is bounds-checked. The only `unsafe` code talks to the terminal driver and never
+  touches file data.
+- **Reach outside itself.** rndr opens the one file you name, read-only. A 3MF's internal paths
+  only ever select entries inside its own zip; nothing is extracted to disk. There is no network
+  access, and no other program is ever run.
+- **Abuse XML.** 3MF is read by a small tag scanner that has no entities or DTDs (a file with a
+  DTD is refused), so XXE and "billion laughs" do not apply.
+- **Take over the terminal.** A render contains only the characters `` .,:;=+*#%@-|/\ ``, spaces
+  and newlines. File names and error text are stripped of control characters before printing.
+- **Exhaust the machine.** Everything a file can make rndr spend is capped:
+
+| Limit | Default | Stops |
+|---|---|---|
+| Triangles | 5,000,000 (`--max-triangles`) | huge or lying files; together with the next row, keeps peak memory under about 2 GB |
+| Input size | 300 bytes per allowed triangle (1.4 GB) | endless input, devices and pipes passed as files |
+| Unpacked 3MF XML | 100 bytes per allowed triangle (500 MB) | zip bombs |
+| One XML tag | 64 KB | single enormous allocations |
+| Objects placed by a 3MF | 1,000,000 | assemblies that reference each other exponentially |
+| Drawing work per frame | 2 billion samples | files where every triangle covers the whole frame |
+| Frame size | 2000 x 1000 | absurd `-s` values or terminal sizes |
+
+  Hash tables are keyed with a per-run random seed, so a file cannot be crafted to make loading
+  quadratic. On a machine with little memory, lower `--max-triangles`: 1,000,000 keeps rndr under
+  about 400 MB.
+
+**How this is checked.** `security_test.go` holds one test per attack (component bomb, zip bomb,
+oversized tag, DTD/entities, path escape, lying STL headers, hash flooding, overdraw, extreme and
+non-finite numbers, escape sequences) and fuzz targets for every format. CI runs them on every
+push, on 64-bit and 32-bit, with the race detector, plus a fuzzing pass, `govulncheck` and CodeQL.
+
+**What is not covered.** A crash from running out of memory is still possible on a machine with
+less RAM than the limits allow; it ends the program and nothing else. `-o` and the `p` key write
+exactly where you tell them to, with your permissions. Release binaries are built by GitHub
+Actions and come with checksums but are not signed.
+
+Found a problem? Please open an issue, or email the address in the commit log for anything
+sensitive.
+
 ## Layout
 
 - `main.go`: command line and the interactive loop
-- `formats.go`: STL, OBJ and 3MF readers
+- `formats.go`: STL and OBJ readers
+- `threemf.go`: 3MF reader and its XML tag scanner
+- `limits.go`: the hard limits on what a file may cost
+- `security_test.go`: hostile-input tests and fuzz targets
 - `mesh.go`: vertex welding, normals, edge detection
 - `render.go`: projection, rasteriser, edge drawing, shading
 - `term_*.go`: raw keyboard input and terminal size per operating system
 - `docs/`: the animation above and `make-demo.py`, the script that regenerates it
 - `testdata/`: a small model and its expected render, used by the release smoke test
-- `java/`: the original Java version, kept for reference
 
 ## Licence
 

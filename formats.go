@@ -384,7 +384,8 @@ func (z *tmfFile) model(part string) (*tmfModel, error) {
 				v := [3]int32{-1, -1, -1}
 				for _, a := range el.Attr {
 					if len(a.Name.Local) == 2 && a.Name.Local[0] == 'v' && a.Name.Local[1] >= '1' && a.Name.Local[1] <= '3' {
-						if n, err := strconv.Atoi(strings.TrimSpace(a.Value)); err == nil {
+						// 32-bit parse: an oversized index is rejected here rather than wrapping
+						if n, err := strconv.ParseInt(strings.TrimSpace(a.Value), 10, 32); err == nil {
 							v[a.Name.Local[1]-'1'] = int32(n)
 						}
 					}

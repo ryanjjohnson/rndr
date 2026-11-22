@@ -7,7 +7,9 @@ Written in Go using only the standard library.
 
 ## Install
 
-Copy the binary for your platform from `dist/` to somewhere on your PATH and name it `rndr`:
+Download the binary for your platform from the
+[latest release](https://github.com/ryanjjohnson/rndr/releases/latest), put it somewhere on
+your PATH and name it `rndr` (on Mac and Linux, also `chmod +x rndr`):
 
 | Machine | File |
 |---|---|
@@ -16,6 +18,9 @@ Copy the binary for your platform from `dist/` to somewhere on your PATH and nam
 | Linux or NAS, 64-bit ARM | `rndr-linux-arm64` |
 | Linux or NAS, 32-bit ARM | `rndr-linux-armv7` |
 | Windows | `rndr-windows-amd64.exe` |
+
+On a Mac, a downloaded binary is quarantined; clear that with
+`xattr -d com.apple.quarantine rndr`, or build from source.
 
 ## Build
 
@@ -77,3 +82,7 @@ fzf --preview 'rndr {} -p'
 - `render.go`: projection, rasteriser, edge drawing, shading
 - `term_*.go`: raw keyboard input and terminal size per operating system
 - `java/`: the original Java version, kept for reference
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

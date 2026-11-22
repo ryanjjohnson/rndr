@@ -1,5 +1,9 @@
 # rndr
 
+<p align="center">
+  <img src="docs/goose.gif" width="600" alt="A low-poly goose rendered as ASCII art, spinning while rndr cycles through its shaded, wireframe and mesh modes">
+</p>
+
 [![release](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml)
 [![security](https://github.com/ryanjjohnson/rndr/actions/workflows/security.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/security.yml)
 [![latest release](https://img.shields.io/github/v/release/ryanjjohnson/rndr)](https://github.com/ryanjjohnson/rndr/releases/latest)
@@ -10,6 +14,37 @@ ASCII previewer for 3D models in the terminal: STL, OBJ and 3MF.
 
 One static binary with no dependencies: no runtime to install, no external programs.
 Written in Go using only the standard library.
+
+## The Prompt
+
+*Translated from grunts and sneers*
+
+This program was written by Claude from a single request. Tidied up, it read:
+
+> Build a console application that reads an STL file and renders it as ASCII art in the
+> terminal, using as few external tools as possible.
+>
+> **Rendering**
+> - Wireframe is the requirement; shading would be a welcome addition.
+>
+> **Interactive use:** `rndr [filename]`
+> - Rotate with `W` `A` `S` `D`.
+> - Pan with `Shift` + `W` `A` `S` `D`.
+> - Zoom in and out with `i` and `o`.
+> - Save the view exactly as currently framed (whatever the rotation, pan and zoom happen
+>   to be) to a text file.
+>
+> **Non-interactive use:** `rndr somefile.stl 94 0 0 1.0`
+> - The arguments are the X, Y and Z rotation followed by the zoom factor.
+> - Print the render to stdout.
+> - The exact argument format is flexible; do whatever makes sense.
+>
+> **Purpose:** previewing STL files from the command line while browsing a NAS.
+
+The original asked for zsh. That lasted about four seconds before being amended to
+"something very portable", which became Java and then, so that it could be shared with
+people whose NAS has no Java, Go. OBJ and 3MF support, width-only sizing, the release
+pipeline and this section were follow-up requests in the same conversation.
 
 ## Install
 
@@ -91,39 +126,9 @@ fzf --preview 'rndr {} -p'
 - `mesh.go`: vertex welding, normals, edge detection
 - `render.go`: projection, rasteriser, edge drawing, shading
 - `term_*.go`: raw keyboard input and terminal size per operating system
+- `docs/`: the animation above and `make-demo.py`, the script that regenerates it
 - `testdata/`: a small model and its expected render, used by the release smoke test
 - `java/`: the original Java version, kept for reference
-
-## The Prompt
-
-*Translated from grunts and sneers*
-
-This program was written by Claude from a single request. Tidied up, it read:
-
-> Build a console application that reads an STL file and renders it as ASCII art in the
-> terminal, using as few external tools as possible.
->
-> **Rendering**
-> - Wireframe is the requirement; shading would be a welcome addition.
->
-> **Interactive use:** `rndr [filename]`
-> - Rotate with `W` `A` `S` `D`.
-> - Pan with `Shift` + `W` `A` `S` `D`.
-> - Zoom in and out with `i` and `o`.
-> - Save the view exactly as currently framed (whatever the rotation, pan and zoom happen
->   to be) to a text file.
->
-> **Non-interactive use:** `rndr somefile.stl 94 0 0 1.0`
-> - The arguments are the X, Y and Z rotation followed by the zoom factor.
-> - Print the render to stdout.
-> - The exact argument format is flexible; do whatever makes sense.
->
-> **Purpose:** previewing STL files from the command line while browsing a NAS.
-
-The original asked for zsh. That lasted about four seconds before being amended to
-"something very portable", which became Java and then, so that it could be shared with
-people whose NAS has no Java, Go. OBJ and 3MF support, width-only sizing, the release
-pipeline and this section were follow-up requests in the same conversation.
 
 ## Licence
 

@@ -25,6 +25,9 @@ const (
 	zoomStep            = 1.15
 )
 
+// version is stamped in by build.sh (-ldflags -X main.version=...).
+var version = "dev"
+
 const usage = `usage: rndr FILE                          interactive viewer
        rndr FILE RX RY RZ [ZOOM [PANX PANY]]   print one frame to stdout
 
@@ -45,6 +48,7 @@ options:
       --crease DEG     angle at which an edge counts as a feature edge (default 30)
       --aspect N       height/width of a character cell (default 2.0)
       --invert         reverse the shading ramp (for dark-on-light output)
+  -V, --version        print the version
 
 interactive keys:
   w s       tilt            a d   spin           z x   roll   (arrows work too)
@@ -107,6 +111,9 @@ func run(argv []string) error {
 		switch {
 		case a == "-h" || a == "--help":
 			fmt.Print(usage)
+			return nil
+		case a == "-V" || a == "--version":
+			fmt.Println("rndr", version)
 			return nil
 		case a == "-p" || a == "--print":
 			forcePrint = true

@@ -1,5 +1,11 @@
 # rndr
 
+[![release](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml)
+[![security](https://github.com/ryanjjohnson/rndr/actions/workflows/security.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/security.yml)
+[![latest release](https://img.shields.io/github/v/release/ryanjjohnson/rndr)](https://github.com/ryanjjohnson/rndr/releases/latest)
+[![licence: MIT](https://img.shields.io/github/license/ryanjjohnson/rndr)](LICENSE)
+[![vibe coded with Claude](https://img.shields.io/badge/vibe%20coded-with%20Claude-d97757)](#the-prompt)
+
 ASCII previewer for 3D models in the terminal: STL, OBJ and 3MF.
 
 One static binary with no dependencies: no runtime to install, no external programs.
@@ -34,6 +40,10 @@ sh build.sh release
 
 The first builds `./rndr` for this machine; the second cross-compiles every platform into `dist/`.
 Needs Go 1.21 or later.
+
+Every push to `main` that changes the program publishes a new release automatically, bumping
+the patch version. To choose the version yourself, push a tag such as `v0.2.0`.
+The `security` workflow runs `govulncheck` and CodeQL on every push and once a week.
 
 ## Use
 
@@ -81,7 +91,39 @@ fzf --preview 'rndr {} -p'
 - `mesh.go`: vertex welding, normals, edge detection
 - `render.go`: projection, rasteriser, edge drawing, shading
 - `term_*.go`: raw keyboard input and terminal size per operating system
+- `testdata/`: a small model and its expected render, used by the release smoke test
 - `java/`: the original Java version, kept for reference
+
+## The Prompt
+
+*Translated from grunts and sneers*
+
+This program was written by Claude from a single request. Tidied up, it read:
+
+> Build a console application that reads an STL file and renders it as ASCII art in the
+> terminal, using as few external tools as possible.
+>
+> **Rendering**
+> - Wireframe is the requirement; shading would be a welcome addition.
+>
+> **Interactive use:** `rndr [filename]`
+> - Rotate with `W` `A` `S` `D`.
+> - Pan with `Shift` + `W` `A` `S` `D`.
+> - Zoom in and out with `i` and `o`.
+> - Save the view exactly as currently framed (whatever the rotation, pan and zoom happen
+>   to be) to a text file.
+>
+> **Non-interactive use:** `rndr somefile.stl 94 0 0 1.0`
+> - The arguments are the X, Y and Z rotation followed by the zoom factor.
+> - Print the render to stdout.
+> - The exact argument format is flexible; do whatever makes sense.
+>
+> **Purpose:** previewing STL files from the command line while browsing a NAS.
+
+The original asked for zsh. That lasted about four seconds before being amended to
+"something very portable", which became Java and then, so that it could be shared with
+people whose NAS has no Java, Go. OBJ and 3MF support, width-only sizing, the release
+pipeline and this section were follow-up requests in the same conversation.
 
 ## Licence
 

@@ -1,14 +1,14 @@
 # rndr
 
-<p align="center">
-  <img src="docs/goose.gif" width="600" alt="A low-poly goose spinning in a terminal while rndr draws it as ASCII art, then in braille dots, then in grey half-block pixels">
-</p>
-
 [![release](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/release.yml)
 [![security](https://github.com/ryanjjohnson/rndr/actions/workflows/security.yml/badge.svg)](https://github.com/ryanjjohnson/rndr/actions/workflows/security.yml)
 [![latest release](https://img.shields.io/github/v/release/ryanjjohnson/rndr)](https://github.com/ryanjjohnson/rndr/releases/latest)
 [![licence: MIT](https://img.shields.io/github/license/ryanjjohnson/rndr)](LICENSE)
 [![vibe coded with Claude](https://img.shields.io/badge/vibe%20coded-with%20Claude-d97757)](#the-prompt)
+
+<p align="center">
+  <img src="docs/goose.gif" width="600" alt="A low-poly goose spinning in a terminal while rndr draws it as ASCII art, then in braille dots, then in grey half-block pixels">
+</p>
 
 ASCII previewer for 3D models in the terminal: STL, OBJ and 3MF. Plain ASCII by default, with
 braille and half-block output when you want more detail than ASCII can carry.
